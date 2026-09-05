@@ -133,7 +133,7 @@ def run_delivery_pipeline(
         "status":"complete" if prepress.get("press_ready") else "complete_with_preflight_warnings",
         "source":str(input_path),"classification":classification,"stages":stages,
         "truth_policy":{"visible_source_pixels_authoritative":True,"hidden_background_inference_lower_confidence":True,"photography_never_claimed_as_vector":True,"exact_font_never_guessed":True,"duplicate_text_avoided_on_photographic_fallback":True},
-        "outputs":{"master_svg":str(master),"editable_pdf":prepress["outputs"]["editable_pdf"],"press_pdf":prepress["outputs"]["press_pdf"],"proof":prepress["outputs"]["proof"],"preflight":prepress["outputs"]["report"],"report":str(delivery/"reconstruction_report.json")},
+        "outputs":{"master_svg":str(master),"editable_pdf":prepress["outputs"]["editable_pdf"],"press_pdf":prepress["outputs"]["press_pdf"],"proof":prepress["outputs"]["proof"],"production_manifest":prepress["outputs"].get("production_manifest"),"preflight":prepress["outputs"]["report"],"report":str(delivery/"reconstruction_report.json")},
     }
     Path(report["outputs"]["report"]).write_text(json.dumps(report,indent=2),encoding="utf-8")
     return report

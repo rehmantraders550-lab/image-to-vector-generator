@@ -367,3 +367,27 @@ The report must expose these classes instead of presenting all reconstructed con
 - queue/retry logic
 - final ZIP/delivery directory
 - reproducibility metadata
+
+
+---
+
+# Additive Corel Production-Semantics Contract
+
+The validated reconstruction and prepress baseline above remains authoritative. The Corel production-semantics extension is additive and must not alter existing reconstruction settings or ordinary CMYK jobs.
+
+New delivery metadata:
+- `production_manifest.json`
+
+Optional SVG declarations:
+- `data-color-role="spot"`
+- `data-spot-name="<authoritative spot name>"`
+- `data-finish-role="<declared coating/finish>"`
+- `data-overprint-fill="true"`
+
+When a special finish is declared, the preflight contract requires separate vector geometry, solid 100% coverage, no transparency, a named spot separation, and explicit overprint intent.
+
+The existing press exporter remains CMYK/PDF/X-4-oriented. It must not claim spot-separation preservation. A declared spot/finish job therefore requires a future separation-aware export/RIP validation path before `press_ready` can be true.
+
+Bleed warnings are classified by intent: geometry extending outside trim for configured bleed is not automatically an error.
+
+See `docs/COREL_PRODUCTION_SEMANTICS.md` for the full compatibility and safety boundary.

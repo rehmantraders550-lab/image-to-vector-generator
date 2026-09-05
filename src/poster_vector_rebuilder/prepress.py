@@ -17,6 +17,8 @@ import numpy as np
 from PIL import Image
 import pikepdf
 
+from .production_semantics import build_production_manifest, inspect_svg_production_semantics
+
 REQUIRED_LAYERS=("00_BACKGROUND","10_HERO","20_BRAND","30_DECORATION","40_ICONS","90_PREPRESS")
 SVG_NS="http://www.w3.org/2000/svg"
 XLINK_NS="http://www.w3.org/1999/xlink"
@@ -211,7 +213,7 @@ def export_prepress_package(master_svg:str|Path,output_dir:str|Path,*,proof_dpi:
     if not gs: raise RuntimeError("Ghostscript is required for CMYK press PDF generation")
     cmyk_icc,rgb_icc,profile_name=_icc_profiles(icc_profile)
     if cmyk_icc is None: raise RuntimeError("A CMYK ICC profile is required for press PDF generation")
-    root,width_px,height_px=_canvas(master_svg); g=_trim_geometry(width_px,height_px,target_ppi=target_ppi,bleed_mm=bleed_mm,trim_width_mm=trim_width_mm,trim_height_mm=trim_height_mm); svg=svg_preflight(master_svg); source_has_raster=bool(svg["raster_images"])
+    root,width_px,height_px=_canvas(master_svg); g=_trim_geometry(width_px,height_px,target_ppi=target_ppi,bleed_mm=bleed_mm,trim_width_mm=trim_width_mm,trim_height_mm=trim_height_mm); svg=svg_preflight(master_svg); production_semantics=inspect_svg_production_semantics(master_svg); source_has_raster=bool(svg["raster_images"])
     editable=output_dir/"artwork_editable.pdf"; press=output_dir/"artwork_press.pdf"; proof=output_dir/"artwork_proof.png"; commands=[]; press_fallback=None
     with tempfile.TemporaryDirectory(prefix="prepress-",dir=output_dir) as td:
         temp=Path(td); trim_svg=temp/"trim.svg"; press_svg=temp/"press.svg"; raw=temp/"press_raw.pdf"; cmyk=temp/"press_cmyk.pdf"; direct=temp/"press_direct.pdf"
@@ -241,6 +243,14 @@ def export_prepress_package(master_svg:str|Path,output_dir:str|Path,*,proof_dpi:
     if source_has_raster and not g["source_meets_target_ppi"]: warnings.append(f"Photographic raster is only {min(g['effective_source_ppi_x'],g['effective_source_ppi_y']):.1f} PPI at requested trim size; press-ready status requires at least {target_ppi:.0f} PPI source detail.")
     if press_fallback!="not_needed": warnings.append("Direct vector CMYK conversion introduced sub-300-PPI renderer rasterization; press PDF was flattened to target PPI CMYK. Editable PDF and master SVG remain vector.")
     if pdfcpu and not diagnostic_checks.get("pdfcpu_strict",True): warnings.append("pdfcpu strict diagnostic reported a conformance issue; default validation remains the interoperability gate.")
-    technical=svg["passed"] and pdf["passed"] and all(tool_checks.values()) and not missing; source_ok=(not source_has_raster) or g["source_meets_target_ppi"]
-    report={"schema":"poster-vector-preflight-v2","passed":technical,"press_ready":technical and g["production_dimensions_confirmed"] and source_ok,"svg":svg,"pdf":pdf,"geometry":g,"press_rendering":{"mode":press_fallback,"editable_pdf_remains_vector":True},"icc":{"profile":str(cmyk_icc),"profile_name":profile_name,"rgb_profile":str(rgb_icc) if rgb_icc else None},"tool_checks":tool_checks,"diagnostic_checks":diagnostic_checks,"tools":available,"missing_required_validators":missing,"commands":commands,"validations":validations,"diagnostics":diagnostics,"warnings":warnings,"source_rules":{"target":"PDF/X-4-oriented","minimum_raster_ppi":300,"minimum_bleed_mm":3.0,"press_color_space":"CMYK","fonts":"embedded or outlined"},"pdfcpu_policy":"Use pdfcpu's official default relaxed validation for acceptance; retain strict mode as a non-blocking diagnostic.","press_pdf_policy":"CMYK PDF 1.6 with explicit MediaBox/BleedBox/TrimBox/ArtBox, ICC OutputIntent and a PDF/X-4 declaration. External PDF/X certification is not claimed without a dedicated PDF/X validator.","outputs":{"editable_pdf":str(editable),"press_pdf":str(press),"proof":str(proof),"report":str(output_dir/"preflight_report.json")}}
+    for item in production_semantics["warnings"]: warnings.append(item["message"])
+    if production_semantics["blockers"]: warnings.extend(item["message"] for item in production_semantics["blockers"])
+    if production_semantics["has_spot_colors"]:
+        warnings.append("Named spot/finish semantics are present; the established CMYK conversion remains unchanged and is not claimed to preserve spot separations. A dedicated separation-aware export/RIP review is required before press-ready approval.")
+    technical=svg["passed"] and pdf["passed"] and all(tool_checks.values()) and not missing and production_semantics["valid"]; source_ok=(not source_has_raster) or g["source_meets_target_ppi"]
+    spot_route_safe=not production_semantics["has_spot_colors"]
+    icc_data={"profile":str(cmyk_icc),"profile_name":profile_name,"rgb_profile":str(rgb_icc) if rgb_icc else None}
+    manifest_path=output_dir/"production_manifest.json"
+    production_manifest=build_production_manifest(master_svg,manifest_path,geometry=g,icc=icc_data,pdf_target="PDF/X-4-oriented")
+    report={"schema":"poster-vector-preflight-v3","passed":technical,"press_ready":technical and g["production_dimensions_confirmed"] and source_ok and spot_route_safe,"svg":svg,"pdf":pdf,"geometry":g,"production_semantics":production_semantics,"press_rendering":{"mode":press_fallback,"editable_pdf_remains_vector":True},"icc":icc_data,"tool_checks":tool_checks,"diagnostic_checks":diagnostic_checks,"tools":available,"missing_required_validators":missing,"commands":commands,"validations":validations,"diagnostics":diagnostics,"warnings":warnings,"source_rules":{"target":"PDF/X-4-oriented","minimum_raster_ppi":300,"minimum_bleed_mm":3.0,"press_color_space":"CMYK","fonts":"embedded or outlined","spot_colors":"explicit semantics only; dedicated separation-aware export required"},"pdfcpu_policy":"Use pdfcpu's official default relaxed validation for acceptance; retain strict mode as a non-blocking diagnostic.","press_pdf_policy":"CMYK PDF 1.6 with explicit MediaBox/BleedBox/TrimBox/ArtBox, ICC OutputIntent and a PDF/X-4 declaration. External PDF/X certification is not claimed without a dedicated PDF/X validator. Named spot-color preservation is not claimed by this CMYK route.","outputs":{"editable_pdf":str(editable),"press_pdf":str(press),"proof":str(proof),"production_manifest":str(manifest_path),"report":str(output_dir/"preflight_report.json")}}
     Path(report["outputs"]["report"]).write_text(json.dumps(report,indent=2),encoding="utf-8"); return report

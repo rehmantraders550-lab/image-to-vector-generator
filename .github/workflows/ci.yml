@@ -134,6 +134,7 @@ jobs:
           test -s ci-output/job/delivery/artwork_press.pdf
           test -s ci-output/job/delivery/artwork_proof.png
           test -s ci-output/job/delivery/preflight_report.json
+          test -s ci-output/job/delivery/production_manifest.json
           test -s ci-output/job/delivery/reconstruction_report.json
 
       - name: Validate final master and press PDF
@@ -153,6 +154,13 @@ jobs:
           assert report['outputs']['master_svg'].endswith('artwork_master.svg')
           assert report['truth_policy']['photography_never_claimed_as_vector'] is True
           preflight=json.loads(Path('ci-output/job/delivery/preflight_report.json').read_text())
+          manifest=json.loads(Path('ci-output/job/delivery/production_manifest.json').read_text())
+          assert manifest['locked_baseline']['default_bleed_mm'] == 3.0
+          assert manifest['locked_baseline']['default_target_ppi'] == 300.0
+          assert manifest['locked_baseline']['editable_master'] == 'SVG'
+          assert manifest['locked_baseline']['process_color_default'] == 'CMYK'
+          assert manifest['locked_baseline']['pdf_policy'] == 'PDF/X-4-oriented'
+          assert manifest['production_semantics']['has_spot_colors'] is False
           assert preflight['passed'] is True, preflight
           assert preflight['press_ready'] is True, preflight
           assert preflight['svg']['passed'] is True
