@@ -18,6 +18,7 @@ from PIL import Image
 import pikepdf
 
 from .production_semantics import build_production_manifest, inspect_svg_production_semantics
+from .job_lock import exclusive_job
 
 REQUIRED_LAYERS=("00_BACKGROUND","10_HERO","20_BRAND","30_DECORATION","40_ICONS","90_PREPRESS")
 SVG_NS="http://www.w3.org/2000/svg"
@@ -181,7 +182,7 @@ def _pdfimages_report(pdf:Path,pdfimages:str|None) -> dict:
                 try: images.append({"page":int(parts[0]),"num":int(parts[1]),"type":parts[2],"width":int(parts[3]),"height":int(parts[4]),"color":parts[5],"x_ppi":float(parts[12]),"y_ppi":float(parts[13])})
                 except ValueError: pass
     effective=[min(i["x_ppi"],i["y_ppi"]) for i in images if i["type"]=="image"]; minimum=min(effective) if effective else None
-    return {"available":True,"command":run,"images":images,"min_ppi":minimum,"all_at_least_300":minimum is None or minimum>=299.0}
+    return {"available":True,"command":run,"images":images,"min_ppi":minimum,"all_at_least_300":run["returncode"]==0 and (minimum is None or minimum>=299.0)}
 
 
 def _pdffonts_report(pdf:Path,pdffonts:str|None) -> dict:
@@ -191,7 +192,7 @@ def _pdffonts_report(pdf:Path,pdffonts:str|None) -> dict:
         for line in run["stdout"].splitlines():
             m=re.search(r"\s+(yes|no)\s+(yes|no)\s+(yes|no)\s+\d+\s+\d+\s*$",line)
             if m: embedded.append(m.group(1)=="yes")
-    return {"available":True,"command":run,"font_count":len(embedded),"all_embedded":all(embedded)}
+    return {"available":True,"command":run,"font_count":len(embedded),"all_embedded":run["returncode"]==0 and all(embedded)}
 
 
 def _pdf_structural_report(pdf_path:Path,g:dict,pdfimages:str|None,pdffonts:str|None) -> dict:
@@ -202,6 +203,7 @@ def _pdf_structural_report(pdf_path:Path,g:dict,pdfimages:str|None,pdffonts:str|
     return {"checks":checks,"passed":all(checks.values()),"pdf_version":version,"pdfx_declaration":pdfx,"boxes":boxes,"measured_bleed_pt":measured,"device_rgb_name_count":rgb,"device_cmyk_name_count":cmyk,"output_intent_count":intents,"images":images,"fonts":fonts}
 
 
+@exclusive_job('output_dir')
 def export_prepress_package(master_svg:str|Path,output_dir:str|Path,*,proof_dpi:int=150,target_ppi:float=300.0,bleed_mm:float=3.0,trim_width_mm:float|None=None,trim_height_mm:float|None=None,icc_profile:str|Path|None=None) -> dict:
     """Export vector-editable PDF and a CMYK, bleed-aware press PDF.
 

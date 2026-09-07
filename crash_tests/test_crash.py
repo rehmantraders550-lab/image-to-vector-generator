@@ -7,6 +7,7 @@ import builtins
 from concurrent.futures import ThreadPoolExecutor
 import hashlib
 import json
+import os
 from pathlib import Path
 import struct
 import subprocess
@@ -22,6 +23,15 @@ import pytest
 
 from poster_vector_rebuilder import normalize, prepress, segment
 from poster_vector_rebuilder.final_assembly import assemble_master_svg
+
+
+@pytest.fixture
+def renderers():
+    missing = [name for name in ('inkscape', 'gs') if not prepress.shutil.which(name)]
+    if missing:
+        if os.environ.get('CRASH_REQUIRE_RENDERERS') == '1':
+            pytest.fail('Crash environment missing required renderers: ' + ', '.join(missing))
+        pytest.skip('Integration renderer unavailable: ' + ', '.join(missing))
 
 
 @pytest.fixture
@@ -125,6 +135,7 @@ def test_same_job_dir_source_consistency(source, tmp_path, monkeypatch):
             return 'busy'
     with ThreadPoolExecutor(max_workers=2) as pool:
         a = pool.submit(run, source)
+        assert copied.wait(5)
         b = pool.submit(run, other)
         actual = [a.result(), b.result()]
     assert actual[0] in ('busy', expected[source]), {'expected': expected[source], 'actual': actual}
@@ -180,7 +191,7 @@ def test_malformed_pdf_rejected(tmp_path, data):
     print(str(exc.value))
 
 
-def test_malformed_icc_rejected(master, tmp_path):
+def test_malformed_icc_rejected(master, tmp_path, renderers):
     icc = tmp_path / 'invalid.icc'
     icc.write_bytes(b'not an ICC profile')
     with pytest.raises((RuntimeError, ValueError, OSError)) as exc:
@@ -196,7 +207,54 @@ def test_failed_inspection_never_reports_success(tmp_path, monkeypatch, function
     assert result[field] is False, result
 
 
-def test_renderer_nonzero_rejected(master, tmp_path, monkeypatch):
+def test_renderer_nonzero_rejected(master, tmp_path, monkeypatch, renderers):
     monkeypatch.setattr(prepress, '_run', lambda cmd: {'command': list(map(str, cmd)), 'returncode': 23, 'stdout': '', 'stderr': 'injected renderer failure'})
     with pytest.raises(RuntimeError, match='failed'):
         prepress.export_prepress_package(master, tmp_path / 'out')
+
+
+@pytest.mark.parametrize('function,field', [('_pdfimages_report', 'all_at_least_300'), ('_pdffonts_report', 'all_embedded')])
+def test_real_inspector_failure(tmp_path, function, field, renderers):
+    tool = 'pdfimages' if function == '_pdfimages_report' else 'pdffonts'
+    executable = prepress.shutil.which(tool)
+    assert executable, tool
+    result = getattr(prepress, function)(tmp_path / 'missing.pdf', executable)
+    assert result['command']['returncode'] != 0, result
+    assert result[field] is False, result
+    print(result)
+
+
+@pytest.mark.parametrize('function,field', [('_pdfimages_report', 'all_at_least_300'), ('_pdffonts_report', 'all_embedded')])
+def test_successful_empty_inspection_keeps_existing_semantics(tmp_path, monkeypatch, function, field):
+    monkeypatch.setattr(prepress, '_run', lambda cmd: {'returncode': 0, 'stdout': '', 'stderr': ''})
+    assert getattr(prepress, function)(tmp_path / 'no-images-or-fonts.pdf', 'tool')[field] is True
+
+
+def test_delivery_repeated_and_independent_processes(source, tmp_path, renderers):
+    def deliver(job):
+        run = subprocess.run([sys.executable, '-m', 'poster_vector_rebuilder.cli', 'deliver', str(source), '-o', str(job)], capture_output=True, text=True, timeout=60)
+        assert run.returncode == 0, (run.returncode, run.stdout, run.stderr)
+        report = json.loads((job / 'delivery/reconstruction_report.json').read_text())
+        assert report['source'] == str(source)
+        for key in ('master_svg', 'editable_pdf', 'press_pdf', 'proof', 'preflight', 'production_manifest'):
+            assert Path(report['outputs'][key]).stat().st_size > 0, (key, report)
+        with pikepdf.open(report['outputs']['press_pdf']) as pdf:
+            assert len(pdf.pages) == 1
+        return (job / 'delivery/artwork_master.svg').read_bytes()
+    job = tmp_path / 'delivery-job'
+    baseline = deliver(job)
+    assert deliver(job) == baseline
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        outputs = list(pool.map(deliver, [tmp_path / 'independent-a', tmp_path / 'independent-b']))
+    assert outputs == [baseline, baseline]
+
+
+def test_busy_delivery_rejected_before_writes(source, tmp_path):
+    from poster_vector_rebuilder.job_lock import job_lock
+    job = tmp_path / 'busy'
+    with job_lock(job):
+        before = {p.name: p.read_bytes() for p in job.iterdir()}
+        run = subprocess.run([sys.executable, '-m', 'poster_vector_rebuilder.cli', 'deliver', str(source), '-o', str(job)], capture_output=True, text=True, timeout=15)
+        assert run.returncode != 0
+        assert 'already in use' in run.stderr, run.stderr
+        assert {p.name: p.read_bytes() for p in job.iterdir()} == before
