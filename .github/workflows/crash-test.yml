@@ -1,0 +1,55 @@
+name: Isolated crash tests
+on:
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  crash:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        python: ['3.10', '3.12']
+    env:
+      OMP_NUM_THREADS: '1'
+      OPENBLAS_NUM_THREADS: '1'
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+      - name: Record baseline and runtime
+        run: |
+          mkdir -p crash-evidence
+          git rev-parse HEAD | tee crash-evidence/head.txt
+          python --version | tee crash-evidence/runtime.txt
+          git diff 5e63e9c0b3dd63d794a1f8139cd9e520ece72f57 -- src > crash-evidence/production.diff
+      - name: Install baseline
+        run: |
+          set -o pipefail
+          python -m pip install -e . pytest pytest-timeout 2>&1 | tee crash-evidence/install.log
+          python -m pip freeze > crash-evidence/dependencies.txt
+      - name: Baseline compile CLI and existing tests
+        run: |
+          set -o pipefail
+          python -m compileall -q src
+          poster-vector --help
+          python -m pytest tests -q --timeout=120 --junitxml=crash-evidence/baseline.xml 2>&1 | tee crash-evidence/baseline.log
+      - name: Install prepress tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends inkscape ghostscript qpdf poppler-utils tesseract-ocr
+      - name: Crash probes (production untouched in initial commit)
+        run: |
+          set -o pipefail
+          python -m pytest crash_tests -vv -rA --tb=long --timeout=90 --junitxml=crash-evidence/crash.xml 2>&1 | tee crash-evidence/crash.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: crash-evidence-python-${{ matrix.python }}
+          path: crash-evidence/
