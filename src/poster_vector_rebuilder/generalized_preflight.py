@@ -8,6 +8,7 @@ import numpy as np
 from PIL import Image, ImageOps
 
 from .normalize import normalize_reference, preserve_source
+from .job_lock import exclusive_job
 from .intake_classify import classify_artwork
 from .panel_detect import run_phase24b
 
@@ -52,6 +53,7 @@ def _full_frame_normalize(input_path: str | Path, job_dir: Path, reason: str) ->
     return geometry
 
 
+@exclusive_job('job_dir')
 def normalize_any_artwork(input_path: str | Path, job_dir: str | Path) -> dict:
     job = Path(job_dir)
     try:
@@ -106,6 +108,7 @@ def generic_foreground_risk(rgb: np.ndarray) -> np.ndarray:
     return cv2.GaussianBlur(risk.astype(np.float32), (0, 0), sigmaX=max(0.8, min(h, w) * 0.0012))
 
 
+@exclusive_job('job_dir')
 def separate_foreground_background(image_path: str | Path, job_dir: str | Path) -> dict:
     job = Path(job_dir)
     with Image.open(image_path) as im:
@@ -165,6 +168,7 @@ def separate_foreground_background(image_path: str | Path, job_dir: str | Path) 
     return report
 
 
+@exclusive_job('job_dir')
 def run_blocks_1_to_4(input_path: str | Path, job_dir: str | Path, *, max_panels: int = 4) -> dict:
     """Run the generalized preparation blocks needed before vector reconstruction.
 

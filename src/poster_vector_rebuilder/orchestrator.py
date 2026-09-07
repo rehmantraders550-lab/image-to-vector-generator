@@ -13,6 +13,7 @@ from .semantic_primitives import reconstruct_semantic_primitives
 from .text_reconstruct import reconstruct_text
 from .final_assembly import assemble_master_svg
 from .prepress import export_prepress_package
+from .job_lock import exclusive_job
 
 
 def _hex(rgb):
@@ -52,6 +53,7 @@ def _full_scene_asset(image_path, output_path):
     return output_path
 
 
+@exclusive_job('job_dir')
 def run_delivery_pipeline(
     input_path: str | Path,
     job_dir: str | Path,

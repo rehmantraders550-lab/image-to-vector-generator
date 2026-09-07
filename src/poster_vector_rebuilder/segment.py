@@ -7,6 +7,7 @@ from typing import Any
 import cv2
 import numpy as np
 from PIL import Image
+from .job_lock import exclusive_job
 
 
 def _load_rgb(path: str | Path) -> np.ndarray:
@@ -230,6 +231,7 @@ def _load_manual_mask(path: str | Path, width: int, height: int) -> np.ndarray:
     return (mask > 127).astype(np.float32)
 
 
+@exclusive_job('job_dir')
 def segment_reference(
     job_dir: str | Path,
     image_path: str | Path | None = None,
