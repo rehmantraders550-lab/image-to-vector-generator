@@ -66,4 +66,4 @@ def test_blocks_1_to_4_produce_manifest_and_masks(tmp_path):
     manifest = job / "metadata" / "blocks_1_to_4.json"
     assert manifest.exists()
     payload = json.loads(manifest.read_text())
-    assert payload["schema"] == "poster-vector-rebuilder.blocks-1-4.v1"
+    assert payload["schema"] == "poster-vector-rebuilder.blocks-1-4.v2"
