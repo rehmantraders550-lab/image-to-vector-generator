@@ -5,3 +5,7 @@ output/
 .DS_Store
 .env
 third_party/
+weights/
+*.pth
+*.pt
+*.ckpt
