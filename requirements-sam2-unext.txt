@@ -1,0 +1,8 @@
+# Optional precision-segmentation-sam2-unext backend.
+# Keep separate from the baseline generator requirements.
+torch~=2.4.0
+torchvision
+hydra-core==1.3.2
+tqdm==4.65.2
+imageio
+timm

@@ -7,6 +7,7 @@ import numpy as np
 from PIL import Image
 
 from .generalized_preflight import run_blocks_1_to_4
+from .precision_segmentation_sam2_unext import SAM2UNeXTConfig
 from .vector_fit import fit_background_vectors
 from .phase24d import recover_hidden_background, run_phase24_acceptance_gate
 from .semantic_primitives import reconstruct_semantic_primitives
@@ -63,24 +64,36 @@ def run_delivery_pipeline(
     bleed_mm: float=3.0,
     target_ppi: float=300.0,
     icc_profile: str | Path | None=None,
+    sam2_unext_config: SAM2UNeXTConfig | None=None,
+    foreground_mask_source: str="baseline",
 ) -> dict:
     """One-command arbitrary reference image -> editable delivery package.
 
-    Detailed photographic scenes are preserved as an explicitly declared raster scene.
-    OCR is still reported, but is not overlaid unless the raster lettering can be removed
-    without damaging source pixels. This avoids duplicate/ghost lettering.
+    `foreground_mask_source` is deliberately explicit for A/B testing. The default
+    remains `baseline`, preserving the validated generator behavior. `sam2_unext`
+    may be selected only when the optional candidate pass was enabled successfully.
     """
+    if foreground_mask_source not in {"baseline", "sam2_unext"}:
+        raise ValueError("foreground_mask_source must be 'baseline' or 'sam2_unext'.")
+
     job=Path(job_dir); delivery=job/"delivery"; assets=delivery/"assets"
     delivery.mkdir(parents=True,exist_ok=True); assets.mkdir(parents=True,exist_ok=True)
     stages={}
-    prep=run_blocks_1_to_4(input_path,job,max_panels=max_panels); stages["prepare"]=prep
+    prep=run_blocks_1_to_4(input_path,job,max_panels=max_panels,sam2_unext_config=sam2_unext_config); stages["prepare"]=prep
     normalized=Path(prep["outputs"]["normalized_reference"]); meta=job/"metadata"; masks=job/"masks"
     classification=json.loads((meta/"artwork_classification.json").read_text(encoding="utf-8"))
+
+    foreground_mask=masks/"foreground_mask.png"
+    if foreground_mask_source=="sam2_unext":
+        candidate=masks/"foreground_mask_sam2_unext.png"
+        if not candidate.is_file():
+            raise RuntimeError("SAM2-UNeXT foreground mask requested but candidate mask was not produced.")
+        foreground_mask=candidate
 
     text=reconstruct_text(normalized,job/"vectors"/"text.svg",report_path=meta/"text_reconstruction.json",exclusion_mask_path=masks/"text_exclusion.png",min_confidence=ocr_confidence)
     stages["text"]=text
     semantic_mask=masks/"semantic_foreground.png"
-    semantic_pixels=_semantic_mask(masks/"foreground_mask.png",masks/"text_exclusion.png",semantic_mask)
+    semantic_pixels=_semantic_mask(foreground_mask,masks/"text_exclusion.png",semantic_mask)
     semantic_svg=None; photo_href=None; text_svg_for_assembly=text["outputs"]["svg"]
     cleanup_policy={"min_area":10.0,"simplify":0.003,"cleanup_radius":0,"node_budget":12000}
     photographic=classification["primary_class"]=="mixed_or_photographic" and classification["routes"].get("photographic_fallback_possible")
@@ -91,6 +104,7 @@ def run_delivery_pipeline(
         text_svg_for_assembly=None
         stages["foreground"]={
             "mode":"full_scene_raster_photographic_fallback","asset":str(photo),"semantic_pixels":semantic_pixels,
+            "mask_source":foreground_mask_source,
             "reason":"classifier identified detailed mixed/photographic content; source scene preserved without pretending soft lighting, texture or depth are vector geometry",
             "ocr_overlay_policy":"suppressed to prevent duplicate/ghost source lettering; OCR remains available in the reconstruction report",
         }
@@ -98,12 +112,13 @@ def run_delivery_pipeline(
         try:
             sem=reconstruct_semantic_primitives(normalized,job/"vectors"/"semantic.svg",mask_path=semantic_mask,report_path=meta/"semantic_primitives.json",colors=12,min_area=cleanup_policy["min_area"],simplify=cleanup_policy["simplify"],cleanup_radius=cleanup_policy["cleanup_radius"])
             semantic_svg=sem["outputs"]["svg"]; stages["foreground"]=sem
+            stages["foreground"]["mask_source"]=foreground_mask_source
         except Exception as exc:
             photo=assets/"photographic_foreground.png"; _photographic_asset(normalized,semantic_mask,photo)
             photo_href="assets/photographic_foreground.png"
-            stages["foreground"]={"mode":"raster_fallback_after_semantic_failure","error":f"{type(exc).__name__}: {exc}","asset":str(photo),"note":"high-confidence OCR text excluded from raster alpha"}
+            stages["foreground"]={"mode":"raster_fallback_after_semantic_failure","error":f"{type(exc).__name__}: {exc}","asset":str(photo),"mask_source":foreground_mask_source,"note":"high-confidence OCR text excluded from raster alpha"}
     else:
-        stages["foreground"]={"mode":"none","semantic_pixels":0}
+        stages["foreground"]={"mode":"none","semantic_pixels":0,"mask_source":foreground_mask_source}
     stages["hard_graphic_cleanup"]={"status":"applied","policy":cleanup_policy,"note":"semantic contours are simplified before SVG emission; morphology is disabled by default to preserve authoritative visible boundaries"}
 
     bg_dir=job/"background_fit"; bg_svg=None
@@ -129,9 +144,10 @@ def run_delivery_pipeline(
         bleed_mm=bleed_mm,target_ppi=target_ppi,icc_profile=icc_profile,
     ); stages["prepress"]=prepress
     report={
-        "schema":"poster-vector-delivery-v2",
+        "schema":"poster-vector-delivery-v3",
         "status":"complete" if prepress.get("press_ready") else "complete_with_preflight_warnings",
         "source":str(input_path),"classification":classification,"stages":stages,
+        "segmentation_selection":{"foreground_mask_source":foreground_mask_source,"baseline_preserved":True},
         "truth_policy":{"visible_source_pixels_authoritative":True,"hidden_background_inference_lower_confidence":True,"photography_never_claimed_as_vector":True,"exact_font_never_guessed":True,"duplicate_text_avoided_on_photographic_fallback":True},
         "outputs":{"master_svg":str(master),"editable_pdf":prepress["outputs"]["editable_pdf"],"press_pdf":prepress["outputs"]["press_pdf"],"proof":prepress["outputs"]["proof"],"production_manifest":prepress["outputs"].get("production_manifest"),"preflight":prepress["outputs"]["report"],"report":str(delivery/"reconstruction_report.json")},
     }
