@@ -1,0 +1,9 @@
+# Optional experimental dependency set for precision-segmentation-sam2-unext.
+# Keep separate from the production baseline until A/B acceptance passes.
+torch~=2.4.0
+torchvision
+hydra-core==1.3.2
+tqdm==4.65.2
+imageio
+timm
+gdown>=5.2
