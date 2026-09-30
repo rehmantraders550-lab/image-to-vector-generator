@@ -15,6 +15,7 @@ from .vector_fit import fit_background_vectors
 from .phase24d import recover_hidden_background, run_phase24_acceptance_gate
 from .generalized_preflight import run_blocks_1_to_4
 from .orchestrator import run_delivery_pipeline
+from .precision_segmentation_sam2_unext import SAM2UNeXTConfig
 
 
 def _load_yaml(path: str | Path) -> dict:
@@ -33,12 +34,38 @@ def _parse_corners(value: str | None):
     return points
 
 
+def _sam2_unext_config(args) -> SAM2UNeXTConfig | None:
+    enabled=bool(getattr(args,"sam2_unext",False))
+    if not enabled:
+        return None
+    return SAM2UNeXTConfig(
+        enabled=True,
+        backend_root=getattr(args,"sam2_unext_backend_root",None),
+        checkpoint_path=getattr(args,"sam2_unext_checkpoint",None),
+        threshold=float(getattr(args,"sam2_unext_threshold",0.5)),
+        input_resolution=int(getattr(args,"sam2_unext_resolution",1024)),
+        device=getattr(args,"sam2_unext_device","auto"),
+    )
+
+
+def _add_sam2_unext_args(parser: argparse.ArgumentParser, *, allow_selection: bool=False) -> None:
+    parser.add_argument("--sam2-unext",action="store_true",help="Run isolated SAM2-UNeXT candidate segmentation without overwriting the baseline mask.")
+    parser.add_argument("--sam2-unext-backend-root",default=None,help="Path to the cloned upstream SAM2-UNeXT repository.")
+    parser.add_argument("--sam2-unext-checkpoint",default=None,help="Path to a trained SAM2-UNeXT checkpoint.")
+    parser.add_argument("--sam2-unext-threshold",type=float,default=0.5)
+    parser.add_argument("--sam2-unext-resolution",type=int,default=1024)
+    parser.add_argument("--sam2-unext-device",default="auto")
+    if allow_selection:
+        parser.add_argument("--foreground-mask-source",choices=["baseline","sam2_unext"],default="baseline",help="Mask used by semantic vector reconstruction. Default keeps the validated baseline.")
+
+
 def main() -> None:
     parser=argparse.ArgumentParser(prog="poster-vector")
     sub=parser.add_subparsers(dest="command",required=True)
 
     p=sub.add_parser("prepare",help="Run generalized raster intake, artwork classification, foreground/background separation and panel detection")
     p.add_argument("image"); p.add_argument("-o","--output",required=True,help="Job directory"); p.add_argument("--max-panels",type=int,default=4)
+    _add_sam2_unext_args(p)
 
     p=sub.add_parser("build",help="Build an editable SVG from a reconstruction YAML")
     p.add_argument("config"); p.add_argument("-o","--output",required=True)
@@ -77,9 +104,10 @@ def main() -> None:
     p.add_argument("--bleed-mm",type=float,default=3.0,help="Bleed on each edge in millimetres; default 3 mm.")
     p.add_argument("--target-ppi",type=float,default=300.0,help="Minimum target raster resolution used when physical size is not supplied.")
     p.add_argument("--icc-profile",default=None,help="Optional CMYK ICC output profile path. FOGRA39/default CMYK profiles are auto-discovered when omitted.")
+    _add_sam2_unext_args(p,allow_selection=True)
 
     args=parser.parse_args()
-    if args.command=="prepare": print(run_blocks_1_to_4(args.image,args.output,max_panels=args.max_panels)["outputs"]["manifest"])
+    if args.command=="prepare": print(run_blocks_1_to_4(args.image,args.output,max_panels=args.max_panels,sam2_unext_config=_sam2_unext_config(args))["outputs"]["manifest"])
     elif args.command=="build": print(save_svg(_load_yaml(args.config),args.output))
     elif args.command=="analyze": print(save_analysis(args.image,args.output))
     elif args.command=="normalize": print(Path(args.output)/normalize_reference(args.image,args.output,rotation=args.rotation,corners=_parse_corners(args.corners))["normalized_path"])
@@ -94,6 +122,7 @@ def main() -> None:
         args.image,args.output,max_panels=args.max_panels,ocr_confidence=args.ocr_confidence,
         trim_width_mm=args.trim_width_mm,trim_height_mm=args.trim_height_mm,bleed_mm=args.bleed_mm,
         target_ppi=args.target_ppi,icc_profile=args.icc_profile,
+        sam2_unext_config=_sam2_unext_config(args),foreground_mask_source=args.foreground_mask_source,
     )["outputs"]["master_svg"])
 
 

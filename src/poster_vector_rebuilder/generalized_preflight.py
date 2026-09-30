@@ -10,6 +10,7 @@ from PIL import Image, ImageOps
 from .normalize import normalize_reference, preserve_source
 from .intake_classify import classify_artwork
 from .panel_detect import run_phase24b
+from .precision_segmentation_sam2_unext import SAM2UNeXTConfig, compare_masks, infer_precision_foreground
 
 
 def _save_gray(path: Path, arr: np.ndarray) -> None:
@@ -56,7 +57,6 @@ def normalize_any_artwork(input_path: str | Path, job_dir: str | Path) -> dict:
     job = Path(job_dir)
     try:
         result = normalize_reference(input_path, job)
-        # A detected quad that discards too much of a native raster is unsafe.
         src = result.get("source", {})
         sw, sh = int(src.get("width", result["normalized_width"])), int(src.get("height", result["normalized_height"]))
         kept = (result["normalized_width"] * result["normalized_height"]) / max(sw * sh, 1)
@@ -68,11 +68,7 @@ def normalize_any_artwork(input_path: str | Path, job_dir: str | Path) -> dict:
 
 
 def generic_foreground_risk(rgb: np.ndarray) -> np.ndarray:
-    """Colour-agnostic foreground/detail risk for arbitrary artwork.
-
-    The field identifies pixels unsafe for smooth-background measurement using
-    multiscale residual, edge energy and local texture. No target hue is encoded.
-    """
+    """Colour-agnostic foreground/detail risk for arbitrary artwork."""
     h, w = rgb.shape[:2]
     bgr = cv2.cvtColor(rgb, cv2.COLOR_RGB2BGR)
     gray = cv2.cvtColor(bgr, cv2.COLOR_BGR2GRAY).astype(np.float32)
@@ -165,13 +161,17 @@ def separate_foreground_background(image_path: str | Path, job_dir: str | Path) 
     return report
 
 
-def run_blocks_1_to_4(input_path: str | Path, job_dir: str | Path, *, max_panels: int = 4) -> dict:
-    """Run the generalized preparation blocks needed before vector reconstruction.
+def run_blocks_1_to_4(
+    input_path: str | Path,
+    job_dir: str | Path,
+    *,
+    max_panels: int = 4,
+    sam2_unext_config: SAM2UNeXTConfig | None = None,
+) -> dict:
+    """Run preparation blocks before vector reconstruction.
 
-    1. Raster intake + coordinate normalization
-    2. Generic artwork classification/routing
-    3. Foreground/background confidence separation
-    4. Region/panel boundary detection on authoritative background pixels
+    SAM2-UNeXT, when enabled, is an isolated candidate pass. It never overwrites
+    masks/foreground_mask.png during A/B evaluation.
     """
     job = Path(job_dir)
     job.mkdir(parents=True, exist_ok=True)
@@ -179,6 +179,19 @@ def run_blocks_1_to_4(input_path: str | Path, job_dir: str | Path, *, max_panels
     normalized = job / geometry["normalized_path"]
     classification = classify_artwork(normalized, job / "metadata" / "artwork_classification.json")
     segmentation = separate_foreground_background(normalized, job)
+
+    precision = {"status": "disabled", "backend": "precision-segmentation-sam2-unext"}
+    ab_metrics = None
+    if sam2_unext_config is not None and sam2_unext_config.enabled:
+        precision_mask = job / "masks" / "foreground_mask_sam2_unext.png"
+        precision = infer_precision_foreground(
+            normalized,
+            precision_mask,
+            config=sam2_unext_config,
+            report_path=job / "metadata" / "sam2_unext_segmentation.json",
+        )
+        ab_metrics = compare_masks(job / "masks" / "foreground_mask.png", precision_mask)
+        (job / "metadata" / "segmentation_ab.json").write_text(json.dumps(ab_metrics, indent=2), encoding="utf-8")
 
     panel_error = None
     try:
@@ -195,12 +208,19 @@ def run_blocks_1_to_4(input_path: str | Path, job_dir: str | Path, *, max_panels
         }
 
     result = {
-        "schema": "poster-vector-rebuilder.blocks-1-4.v1",
+        "schema": "poster-vector-rebuilder.blocks-1-4.v2",
         "status": "complete",
         "blocks": {
             "1_raster_intake_normalization": {"status": "complete", "method": geometry["quad_detection"]["method"]},
             "2_artwork_classification": {"status": "complete", "primary_class": classification["primary_class"], "routes": classification["routes"]},
-            "3_foreground_background_separation": {"status": "complete", "ratios": segmentation["ratios"]},
+            "3_foreground_background_separation": {
+                "status": "complete",
+                "ratios": segmentation["ratios"],
+                "baseline_backend": "opencv-color-agnostic-risk",
+                "precision_candidate": precision,
+                "ab_metrics": ab_metrics,
+                "active_downstream_mask": "masks/foreground_mask.png",
+            },
             "4_region_panel_detection": {"status": "complete", "boundary_count": panels.get("boundary_count", 0), "panel_hypothesis_count": panels.get("panel_hypothesis_count", 0), "nonfatal_note": panel_error},
         },
         "outputs": {
@@ -208,6 +228,8 @@ def run_blocks_1_to_4(input_path: str | Path, job_dir: str | Path, *, max_panels
             "geometry": str(job / "metadata" / "geometry.json"),
             "classification": str(job / "metadata" / "artwork_classification.json"),
             "segmentation": str(job / "metadata" / "generalized_segmentation.json"),
+            "sam2_unext_segmentation": str(job / "metadata" / "sam2_unext_segmentation.json") if precision.get("status") == "complete" else None,
+            "segmentation_ab": str(job / "metadata" / "segmentation_ab.json") if ab_metrics is not None else None,
             "panel_report": panels.get("outputs", {}).get("report") if isinstance(panels.get("outputs"), dict) else None,
         },
     }
