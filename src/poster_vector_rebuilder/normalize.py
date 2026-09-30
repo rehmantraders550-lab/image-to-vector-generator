@@ -10,6 +10,7 @@ import shutil
 import cv2
 import numpy as np
 from PIL import Image, ImageOps
+from .job_lock import exclusive_job
 
 Rotation = Literal["keep", "90cw", "90ccw", "180"]
 
@@ -45,6 +46,7 @@ def _source_metadata(path: Path) -> dict:
         }
 
 
+@exclusive_job('job_dir')
 def preserve_source(input_path: str | Path, job_dir: str | Path) -> tuple[Path, dict]:
     input_path = Path(input_path)
     job_dir = Path(job_dir)
@@ -238,6 +240,7 @@ def rotate_image(rgb: np.ndarray, rotation: Rotation) -> tuple[np.ndarray, np.nd
     raise ValueError(f"Unsupported rotation: {rotation}")
 
 
+@exclusive_job('job_dir')
 def normalize_reference(
     input_path: str | Path,
     job_dir: str | Path,
